@@ -8,6 +8,21 @@ from pydantic import BaseModel,Field
 from agent import analyze_notice,scan_all,refresh_notice_body
 from storage import connect,event,get_notice,get_profile,get_settings,list_notices,now
 app=FastAPI(title='CampusRadar 校务雷达',version='0.1.0')
+class RagQuestionIn(BaseModel):
+ question:str=Field(min_length=2,max_length=500)
+ source_id:str=Field(default='',max_length=100)
+@app.get('/api/rag/index')
+def rag_status():
+ from rag import sync_index
+ return sync_index()
+@app.post('/api/rag/ask')
+def rag_ask(body:RagQuestionIn):
+ from rag import ask
+ question=body.question.strip()
+ if len(question)<2:raise HTTPException(400,'请输入具体问题')
+ try:return ask(question,body.source_id)
+ except ValueError as exc:raise HTTPException(400,str(exc)) from exc
+ except Exception as exc:raise HTTPException(502,'检索问答失败，请检查模型设置后重试') from exc
 class ProfileIn(BaseModel): name:str=''; school:str=''; major:str=''; keywords:str=''
 class SourceIn(BaseModel): url:str=Field(min_length=10,max_length=1000); label:str=Field(default='',max_length=120)
 class SettingsIn(BaseModel): provider:str; openai_model:str='gpt-6-luna'; deepseek_model:str='deepseek-chat'; openai_key:str|None=None; deepseek_key:str|None=None; openai_base_url:str='https://api.openai.com/v1'; deepseek_base_url:str='https://api.deepseek.com'
