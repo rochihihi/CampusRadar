@@ -74,11 +74,15 @@ def load_notice(s):
  if not n:raise ValueError('通知不存在')
  if int(n.get('content_version') or 0)<2 or not n['content'].strip():
   try:n=refresh_notice_body(n['id'])
-  except Exception as exc:raise ValueError('无法读取通知正文，请检查原通知链接后重试') from exc
+  except ValueError as exc:raise ValueError('无法读取通知正文：'+str(exc)) from exc
+  except httpx.HTTPStatusError as exc:raise ValueError(f'原通知网页返回 HTTP {exc.response.status_code}，请打开原网页确认链接是否有效') from exc
+  except httpx.RequestError as exc:raise ValueError('原通知网页连接失败或超时，请检查网络后重新读取') from exc
+  except Exception as exc:raise ValueError('通知网页解析失败，请打开原网页确认页面内容') from exc
  n['source_links']=n.get('notice_links',[])
  return {'notice':n,'profile':p}
 def assess(s):
  system='''你是校园事务助手。根据学生档案与通知原文，整理成可以直接执行的办理计划。只依据通知原文，不能猜测；不确定的字段返回空字符串或空数组。只返回一个 JSON 对象，不要 Markdown。
+若原文注明是资料下载目录，只能整理目录中可见的资料和链接；不得猜测链接内部的规定，不得把目录中的所有表格都当成用户必须提交的材料，不生成无依据的办理步骤。
 字段要求：
 relevant(boolean)：是否与学生档案有关；reason(string)：一句话说明依据；summary(string)：给学生的简短结论；
 category(string)：exam/scholarship/teaching/activity/competition/administration/other 之一；priority(string)：urgent/high/normal/low 之一；

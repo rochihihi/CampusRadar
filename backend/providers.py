@@ -60,12 +60,21 @@ def extract_notice(markup,url):
  ids={'vsb_content','vsb_content_2','articlecontent','article-content','newscontent'}
  classes={'v_news_content','wp_articlecontent','article-content','news_content','news-content','detail-text','TRS_Editor'}
  candidates=[n for n in nodes if n.attrs.get('id') in ids or set(n.attrs.get('class','').split()) & classes]
+ page_type='article'
+ if not candidates:
+  # Recognized download lists are useful resources, but not policy article bodies.
+  directories=[n for n in nodes if 'down-load' in n.attrs.get('class','').split()]
+  lists=[n for d in directories for n in d.walk() if n.tag=='ul' and any(a.tag=='a' and a.attrs.get('href') for a in n.walk())]
+  if lists:candidates=lists;page_type='resources'
  if not candidates:candidates=[n for n in nodes if n.tag=='article']
  if not candidates:candidates=[n for n in nodes if n.tag=='main']
  # Do not turn an unrecognized whole page into an alleged notification body.
  if not candidates:raise ValueError('该页面没有可识别的通知正文，可能是栏目或下载列表，请打开具体通知')
  body=max(candidates,key=lambda n:len(n.text()))
  content='\n'.join(re.sub(r'[ \t\r\f]+',' ',x).strip() for x in body.text().splitlines() if x.strip())[:40000]
+ if not content:raise ValueError('通知正文为空，请打开原网页检查是否需要登录或是否仅含图片')
+ resource_note='本页是资料下载目录，只提供资料名称与链接，不包含链接内的规定全文；不能据此确定申请条件或截止日期。'
+ if page_type=='resources':content=resource_note+'\n'+content
  scope=body
  parent=body.parent
  while parent:
@@ -81,7 +90,9 @@ def extract_notice(markup,url):
   if id(n) not in body_nodes and not attachment:continue
   if label in {'首页','上一条','下一条','返回','关闭','打印','查看详情'}:continue
   seen.add(target);links.append({'label':label[:200],'url':target,'attachment':attachment})
- return {'content':content,'links':links[:30],'content_html':render_article(body,url)}
+ content_html=render_article(body,url)
+ if page_type=='resources':content_html='<p>'+html.escape(resource_note)+'</p>'+content_html
+ return {'content':content,'links':links[:30],'content_html':content_html,'page_type':page_type}
 
 def fetch_notice(url):
  with httpx.Client(timeout=25,follow_redirects=True,headers={'User-Agent':'CampusRadar/1.0'}) as client:

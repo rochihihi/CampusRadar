@@ -79,4 +79,30 @@ class CampusRadarTests(unittest.TestCase):
    self.assertIn('text/html',response.headers['content-type'])
    self.assertIn('<table>',response.text)
    self.assertIn("default-src 'none'",response.headers['content-security-policy'])
+ def test_download_directory_extracts_only_resources(self):
+  from providers import extract_notice
+  from unittest.mock import patch
+  markup='<nav><a href="/home">首页</a></nav><div class="down-load"><script>bad()</script><ul><li><a href="../info/1068/8173.htm">考试工作管理办法</a></li><li><a href="../info/1068/8168.htm">缓考申请表</a></li></ul><div>首页 上页 共7条</div></div><footer>处长信箱</footer>'
+  detail=extract_notice(markup,'https://example.edu/zlxz1/ksgl.htm')
+  self.assertEqual(detail['page_type'],'resources')
+  self.assertIn('资料下载目录',detail['content'])
+  self.assertNotIn('处长信箱',detail['content'])
+  self.assertNotIn('共7条',detail['content'])
+  self.assertEqual(len(detail['links']),2)
+  self.assertIn('https://example.edu/info/1068/8173.htm',detail['links'][0]['url'])
+  from storage import connect,now
+  with connect() as db:db.execute("INSERT INTO notices(id,external_id,title,url,content,content_version,first_seen,updated_at) VALUES('directory','directory','考试管理','https://example.edu/zlxz1/ksgl.htm','旧缓存','0',?,?)",(now(),now()))
+  with patch('agent.fetch_notice',return_value=detail),patch('agent.model_json',return_value={'relevant':True,'summary':'考试资料目录','materials':[],'action_items':[]}):
+   result=self.client.post('/api/notices/directory/analyze')
+  self.assertEqual(result.status_code,200)
+  self.assertEqual(result.json()['content_version'],'2')
+  self.assertIn('资料下载目录',result.json()['content'])
+ def test_body_failure_exposes_actionable_reason(self):
+  from storage import connect,now
+  from unittest.mock import patch
+  with connect() as db:db.execute("INSERT INTO notices(id,external_id,title,url,first_seen,updated_at) VALUES('bad','bad','通知','https://example.edu/bad',?,?)",(now(),now()))
+  with patch('agent.fetch_notice',side_effect=ValueError('该页面是栏目列表，请打开具体通知')):
+   result=self.client.post('/api/notices/bad/analyze')
+  self.assertEqual(result.status_code,400)
+  self.assertIn('栏目列表',result.json()['detail'])
 if __name__=='__main__':unittest.main()
