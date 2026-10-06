@@ -1,0 +1,28 @@
+# Dependencies and generated builds
+frontend/node_modules/
+frontend/dist/
+.build/
+build/
+dist/
+release/
+*.spec
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local settings, credentials and user data
+.env
+.env.*
+*.sqlite*
+*.db
+*.dpapi
+*.log
+*.pem
+*.key
+data/
+smoke-data/
+test-data/
+.DS_Store
+Thumbs.db
