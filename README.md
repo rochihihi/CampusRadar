@@ -34,7 +34,7 @@
 
 ### Embedding 混合检索
 
-1. 在“来源与设置 → Embedding 向量检索”启用功能，填写 API 基础地址、Embedding 模型和 Key，保存后测试连接。
+1. 在“来源与设置 → 向量检索”启用功能，填写 API 基础地址、Embedding 模型和 Key，保存后测试连接。
 2. 官方地址可复用现有 OpenAI Key；如果该 Key 仅限聊天模型，需单独填写有 Embedding 权限的 Key。支持兼容 OpenAI `/embeddings` 的服务，默认模型 `text-embedding-3-small`。
 3. 在“通知问答”更新正文后，点击“建立向量索引”。每批处理 16 个片段，可在失败后继续；已缓存片段不会重复生成。
 4. 提问时将问题转为向量，与本地 SQLite 缓存的归一化向量计算余弦相似度，再与 BM25 排名按 RRF 融合。来源过滤和原文引用校验同样生效。
