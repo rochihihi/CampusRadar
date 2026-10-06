@@ -14,7 +14,48 @@ class RagQuestionIn(BaseModel):
 @app.get('/api/rag/index')
 def rag_status():
  from rag import sync_index
- return sync_index()
+ from embeddings import vector_status
+ return {**sync_index(),**vector_status()}
+class EmbeddingSettingsIn(BaseModel):
+ enabled:bool=False
+ base_url:str=Field(default='https://api.openai.com/v1',max_length=1000)
+ model:str=Field(default='text-embedding-3-small',max_length=200)
+ api_key:str|None=Field(default=None,max_length=1000)
+ use_openai_key:bool=True
+ threshold:float=Field(default=0.35,ge=0,le=1)
+@app.get('/api/embeddings/settings')
+def embedding_settings():
+ from embeddings import config
+ return config(public=True)
+@app.put('/api/embeddings/settings')
+def embedding_save(body:EmbeddingSettingsIn):
+ from embeddings import save_config
+ try:return save_config(body.model_dump())
+ except ValueError as exc:raise HTTPException(400,str(exc)) from exc
+@app.post('/api/embeddings/test')
+def embedding_test():
+ from embeddings import config,embed
+ try:
+  vector=embed(['校园通知连接测试'],config())[0]
+  return {'ok':True,'dimensions':len(vector)}
+ except ValueError as exc:raise HTTPException(400,str(exc)) from exc
+@app.post('/api/embeddings/build')
+def embedding_build():
+ from rag import sync_index
+ from embeddings import build_batch
+ try:
+  sync_index()
+  return build_batch()
+ except ValueError as exc:raise HTTPException(400,str(exc)) from exc
+@app.delete('/api/embeddings/cache')
+def embedding_clear():
+ from embeddings import schema,BUILD_LOCK
+ if not BUILD_LOCK.acquire(False):raise HTTPException(409,'向量建库正在执行')
+ try:
+  with connect() as db:
+   schema(db);db.execute('DELETE FROM rag_vectors')
+ finally:BUILD_LOCK.release()
+ return {'ok':True}
 @app.post('/api/rag/ask')
 def rag_ask(body:RagQuestionIn):
  from rag import ask

@@ -10,6 +10,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langgraph.graph import StateGraph, END
 from agent import model_json
 from storage import connect, get_profile
+from embeddings import schema as vector_schema, vector_status, vector_search, chunk_key
 
 splitter = RecursiveCharacterTextSplitter(chunk_size=900, chunk_overlap=120)
 STOP = {'什么', '怎么', '如何', '可以', '是否', '需要', '哪些', '一下', '请问', '我的', '我们', '还有', '时候', '这个', '那个', '有没有', 'the', 'is', 'a', 'of', 'to'}
@@ -26,6 +27,7 @@ def terms(text):
 
 
 def schema(db):
+    vector_schema(db)
     db.execute('CREATE TABLE IF NOT EXISTS rag_documents(notice_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)')
     db.execute('CREATE VIRTUAL TABLE IF NOT EXISTS rag_chunks USING fts5(notice_id UNINDEXED, title UNINDEXED, url UNINDEXED, text UNINDEXED, position UNINDEXED, title_terms, body_terms)')
 
@@ -38,12 +40,14 @@ def sync_index():
         valid = {r['id'] for r in rows}
         old = {r['notice_id']: r['fingerprint'] for r in db.execute('SELECT * FROM rag_documents')}
         for nid in old.keys() - valid:
+            db.execute('DELETE FROM rag_vectors WHERE notice_id=?', (nid,))
             db.execute('DELETE FROM rag_chunks WHERE notice_id=?', (nid,))
             db.execute('DELETE FROM rag_documents WHERE notice_id=?', (nid,))
         for r in rows:
             fingerprint = hashlib.sha256((r['title']+'\0'+r['url']+'\0'+r['content']).encode()).hexdigest()
             if old.get(r['id']) == fingerprint:
                 continue
+            db.execute('DELETE FROM rag_vectors WHERE notice_id=?', (r['id'],))
             db.execute('DELETE FROM rag_chunks WHERE notice_id=?', (r['id'],))
             for i, chunk in enumerate(splitter.split_text(r['content'])):
                 db.execute('INSERT INTO rag_chunks VALUES(?,?,?,?,?,?,?)', (r['id'], r['title'], r['url'], chunk, i, ' '.join(terms(r['title'])), ' '.join(terms(chunk))))
@@ -51,30 +55,44 @@ def sync_index():
         return {'documents': len(rows), 'chunks': db.execute('SELECT count(*) FROM rag_chunks').fetchone()[0], 'pending': db.execute("SELECT count(*) FROM notices WHERE CAST(content_version AS INTEGER)<2 OR length(trim(content))=0").fetchone()[0]}
 
 
-def retrieve(question, source_id=''):
+def retrieve_detail(question, source_id=''):
     sync_index()
     tokens = list(dict.fromkeys(terms(question)))[:100]
-    if not tokens:
-        return []
     match = ' OR '.join('"'+x+'"' for x in tokens)
     with connect() as db:
         rows = db.execute('''SELECT rag_chunks.*, bm25(rag_chunks,0,0,0,0,0,3,1) AS score
             FROM rag_chunks WHERE rag_chunks MATCH ?
             AND (?='' OR notice_id IN (SELECT id FROM notices WHERE source_id=?))
-            ORDER BY score LIMIT 60''', (match, source_id, source_id)).fetchall()
+            ORDER BY score LIMIT 60''', (match, source_id, source_id)).fetchall() if tokens else []
+    lexical=[]
+    for row in rows:
+        r=dict(row)
+        overlap=set(tokens) & set(terms(r['text']+' '+r['title']))
+        if len(overlap)>=min(2,len(tokens)):
+            lexical.append(r)
+    semantic,warning,mode=vector_search(question,source_id)
+    fused={}
+    for method,candidates in [('keyword',lexical),('vector',semantic)]:
+        for rank,r in enumerate(candidates,1):
+            key=chunk_key(r)
+            if key not in fused:fused[key]={'row':r,'score':0,'methods':[]}
+            fused[key]['score']+=1/(60+rank)
+            fused[key]['methods'].append(method)
     counts = Counter()
     result = []
-    for row in rows:
-        r = dict(row)
-        # Require at least two query terms (or the one specific term for short queries).
-        overlap = set(tokens) & set(terms(r['text']+' '+r['title']))
-        if len(overlap) < min(2, len(tokens)) or counts[r['notice_id']] >= 2:
+    for hit in sorted(fused.values(),key=lambda h:h['score'],reverse=True):
+        r=hit['row']
+        if counts[r['notice_id']] >= 2:
             continue
         counts[r['notice_id']] += 1
-        result.append({'id': 'S'+str(len(result)+1), 'notice_id': r['notice_id'], 'title': r['title'], 'url': r['url'], 'excerpt': r['text'], 'position': int(r['position'])})
+        result.append({'id': 'S'+str(len(result)+1), 'notice_id': r['notice_id'], 'title': r['title'], 'url': r['url'], 'excerpt': r['text'], 'position': int(r['position']), 'retrieved_by':hit['methods']})
         if len(result) == 6:
             break
-    return result
+    return {'sources':result,'retrieval_mode':mode,'retrieval_warning':warning}
+
+
+def retrieve(question,source_id=''):
+    return retrieve_detail(question,source_id)['sources']
 
 
 class RagState(TypedDict, total=False):
@@ -83,10 +101,12 @@ class RagState(TypedDict, total=False):
     sources: list
     raw: dict
     response: dict
+    retrieval_mode: str
+    retrieval_warning: str
 
 
 def search_node(state):
-    return {'sources': retrieve(state['question'], state.get('source_id', ''))}
+    return retrieve_detail(state['question'], state.get('source_id', ''))
 
 
 def generate_node(state):
@@ -126,7 +146,7 @@ def clean_node(state):
     missing = str(raw.get('missing') or '')[:1000]
     if not claims:
         missing = missing or '未找到足够的原文依据，请补充通知或换一个更具体的问题。'
-    return {'response': {'claims': claims, 'sources': state['sources'], 'missing': missing, 'grounded': bool(claims)}}
+    return {'response': {'claims': claims, 'sources': state['sources'], 'missing': missing, 'grounded': bool(claims), 'retrieval_mode':state.get('retrieval_mode','keyword'),'retrieval_warning':state.get('retrieval_warning','')}}
 
 
 graph = StateGraph(RagState)
